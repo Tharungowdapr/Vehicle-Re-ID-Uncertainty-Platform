@@ -1,148 +1,195 @@
-# File map
+# 📁 Exhaustive File Map & Directory Architecture Guide
 
-What each file is, why it exists, and when you would touch it.
+This document provides a comprehensive, file-by-file breakdown of the entire **Vehicle Re-ID with Uncertainty Quantification** platform: what each file does, why it exists, and how all components interact.
 
-## Root
+---
 
-| Path | What / Why | Modify when |
+## 🗺️ System Overview & High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         DATA INGESTION & PROCESSING                         │
+│                                                                             │
+│   Video / RTSP ──▶ YOLOv8 / RF-DETR ──▶ Attribute Extractor (Color/Plate)   │
+│   ZIP / Images ──▶ Dataset Processor ──▶ CSV Manifests (veri776_*.csv)      │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+┌──────────────────────────────────────▼──────────────────────────────────────┐
+│                      FEATURE EXTRACTION & CALIBRATION                       │
+│                                                                             │
+│   Visibility Estimator ──▶ OSNet / ResNet-IBN Feature Encoder (512-dim)     │
+│   Camera Descriptor    ──▶ Conditional Temperature Scaling T(v, c)          │
+│   Calibrator MLP       ──▶ Calibrated Probability ──▶ Risk-Bounded Gate     │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+┌──────────────────────────────────────▼──────────────────────────────────────┐
+│                       ABSTENTION & DECISION LAYER                           │
+│                                                                             │
+│   Confidence ≥ θ_high  ──▶  ✅ MATCH   (Autonomous Acceptance)              │
+│   θ_low ≤ Conf < θ_high ──▶  ⚠️  UNCERTAIN (Escalate to Human Review Queue) │
+│   Confidence < θ_low   ──▶  ❌ REJECT  (Autonomous Non-Match)               │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+┌──────────────────────────────────────▼──────────────────────────────────────┐
+│                          SERVING & WEB INTERFACES                           │
+│                                                                             │
+│   FastAPI REST API (:8000) ── /v1/search/plate  /v1/ingest/video  /v1/review│
+│   Next.js Console  (:3000) ── Dashboard · Search Console · Ingestion · Data │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 1. Project Root Directory
+
+| Path | What / Why | Purpose & When to Touch |
 |---|---|---|
-| `pyproject.toml` | Single source for deps, ruff, black, mypy, pytest, coverage gate, import contracts | Adding a dependency (pin it) or changing a tool setting |
-| `Makefile` | Every command anyone needs; `make help` lists them | Adding a workflow |
-| `.env.example` | Every environment variable with a comment. Real values go in `.env`, never committed | Adding a config knob |
-| `.pre-commit-config.yaml` | ruff, black, mypy, gitleaks, large-file guard | Adding a hook |
-| `pnpm-workspace.yaml` | Declares `apps/*` as workspaces | Adding an app |
+| `pyproject.toml` | Single source of truth for Python dependencies, build system, tool configurations (`ruff`, `black`, `mypy`, `pytest`, test coverage gates, and package metadata). | Adding a new Python dependency or adjusting linter/formatter rules. |
+| `Makefile` | Central CLI automation hub with 20+ targets (`make run`, `make test`, `make lint`, `make benchmark`, `make train-safe`). | Adding or modifying repetitive developer workflows. |
+| `.env.example` | Template documenting all environment variables with default values and descriptions. | Adding new configuration knobs (e.g., Redis URLs, model paths, port numbers). |
+| `.pre-commit-config.yaml` | Git pre-commit hooks executing `ruff`, `black`, `mypy`, and security checks before every commit. | Adding git commit security rules. |
+| `pnpm-workspace.yaml` | Defines monorepo workspace configurations including `apps/*`. | Adding a new frontend or micro-app. |
+| `yolov8n.pt` | Pretrained YOLOv8 nano model weights used for fast real-time vehicle bounding-box detection. | Upgrading the object detector backbone. |
 
-## `src/reiduq/core/` — infrastructure
+---
 
-| Path | What / Why | Modify when |
-|---|---|---|
-| `types.py` | Frozen dataclasses every layer is typed against. Freeze early; changing them later is expensive | A genuinely new data concept appears |
-| `config.py` | Pydantic schemas, YAML `_base_` inheritance, CLI overrides, SHA-256 config hash. `extra="forbid"` turns a typo into a crash | Adding a config field |
-| `settings.py` | Environment-driven runtime settings. No secret is ever hardcoded | Adding an env var |
-| `registry.py` | String → class registries so configs name components without imports | Adding a component category |
-| `paths.py` | `safe_path` containment check against traversal | Basically never |
-| `seeding.py` | Seeds python/numpy/torch/CUDA and dataloader workers | Adding a new RNG source |
-| `logging.py` | structlog JSON with `run_id`/`config_hash` on every record | Changing log shape |
-| `exceptions.py` | Typed domain errors | Adding an error category |
+## 2. `src/reiduq/` — Backend Core & Machine Learning Engine
 
-## `src/reiduq/data/`
+### `src/reiduq/core/` — Infrastructure & Core Primitives
+| Path | What / Why |
+|---|---|
+| `types.py` | Immutable dataclasses that every layer is typed against (`Sample`, `BoundingBox`, `CalibratedPrediction`, `RiskBound`). |
+| `config.py` | Pydantic schemas, YAML inheritance, CLI argument overrides, and SHA-256 config hashing. `extra="forbid"` turns configuration typos into instant errors. |
+| `settings.py` | Environment-variable driven runtime configurations (`MODEL_DIR`, `RATE_LIMIT`, `PORT`). No secret is ever hardcoded. |
+| `registry.py` | String-to-class dependency registry enabling configs to name backbones and calibrators without import coupling. |
+| `paths.py` | Safe path resolution utility ensuring file containment and preventing directory traversal attacks. |
+| `seeding.py` | Deterministic random number generator seeding across Python, NumPy, PyTorch, and CUDA workers. |
+| `logging.py` | High-performance structured JSON logging (`structlog`) attaching `run_id` and `timestamp` to every log line. |
+| `exceptions.py` | Strongly-typed domain error hierarchy (`ReIDError`, `SplitLeakageError`, `CalibrationError`). |
+
+### `src/reiduq/data/` — Data Ingestion & Protocols
+| Path | What / Why |
+|---|---|
+| `base.py` | `Sample` record and abstract base class for dataset adapters. |
+| `veri776.py` | VeRi-776 dataset adapter parsing vehicle identity, camera ID, and frame timestamp from filenames. |
+| `veriwild.py` | VERI-Wild adapter reading identities and cameras from list files. |
+| `dataset_processor.py` | Ingestion pipeline converting raw image folders/ZIPs into normalized CSV manifests. |
+| `torch_dataset.py` | `ReIDImageDataset` remapping vehicle IDs to contiguous labels for classifier heads. |
+| `transforms.py` | Image augmentations (normalization, resizing, random horizontal flip). |
+| `splits.py` | **Correctness-critical**: Builds leakage-free train/validation/test manifests and verifies that vehicle identities never cross partitions. |
+| `samplers.py` | PK Identity Sampler guaranteeing $P$ identities with $K$ instances per mini-batch for triplet loss. |
+| `occlusion/` | Occlusion simulation bank (`occluder_bank.py`, `compositor.py`, `geometry.py`) creating realistic synthetic obstacles (buses, poles, walls). |
+
+### `src/reiduq/detection/` — Vehicle Detection & Attribute Extraction
+| Path | What / Why |
+|---|---|
+| `base.py` | Abstract interface for object detectors. |
+| `yolov8.py` | Ultralytics YOLOv8 wrapper filtering vehicles (`car`, `bus`, `truck`) with confidence thresholding. |
+| `rfdetr.py` | RF-DETR transformer-based detector implementation. |
+| `attributes.py` | **Multi-Attribute Extractor**: HSV color histogram classifier (8 palettes), aspect-ratio vehicle brand profiler, and morphological license plate OCR cropper. |
+
+### `src/reiduq/visibility/` — Image Quality & Occlusion Estimation
+| Path | What / Why |
+|---|---|
+| `estimator.py` | Calculates scalar visibility score $v \in [0, 1]$ based on image sharpness, contrast, and segmentation mask coverage. |
+| `parts.py` | 6-region spatial visibility vector indicating *which* parts of the vehicle are occluded (front, rear, roof, sides). |
+| `bands.py` | Occlusion bucketing (O0 to O4) for stratified performance benchmarking under severe weather. |
+
+### `src/reiduq/calibration/` — Uncertainty Quantification & Calibrators
+| Path | What / Why |
+|---|---|
+| `base.py` | `BaseCalibrator` interface defining parameters and latency overhead. |
+| `raw.py` | Baseline uncalibrated cosine similarity / softmax. |
+| `global_temperature.py` | Single scalar temperature scaling (Guo et al. 2017) baseline. |
+| `platt.py`, `vector_scaling.py` | Standard post-hoc Platt logistic scaling and vector scaling baselines. |
+| `conditional_temperature.py` | **The Core Method**: Multi-layer perceptron predicting $T(v, c)$ dynamically conditioned on visibility $v$ and camera pair descriptor $c$. |
+| `features.py` | Assembles the conditioning feature vector for the calibrator network. |
+| `camera_descriptor.py` | Label-free camera domain descriptor encoding lighting, angle, and camera divergence. |
+| `mc_dropout.py`, `deep_ensemble.py`, `evidential.py` | Bayesian and evidential uncertainty baselines for benchmark comparisons. |
+
+### `src/reiduq/abstention/` — Risk-Bounded Selective Prediction
+| Path | What / Why |
+|---|---|
+| `policy.py` | Optimal threshold search guaranteeing empirical error rate stays below risk budget $\alpha$. |
+| `conformal.py` | Split-conformal prediction providing finite-sample statistical coverage guarantees. |
+| `decision.py` | 3-way decision logic emitting `ACCEPT`, `REJECT`, or `ABSTAIN` (human review routing). |
+
+### `src/reiduq/models/` — Deep Learning Backbones & Training
+| Path | What / Why |
+|---|---|
+| `builder.py` | Constructs Re-ID encoders with $L_2$ feature normalization layers. |
+| `backbones/` | OSNet (`osnet_ain`), ResNet-50-IBN-a, and TransReID (Vision Transformer) architectures. |
+| `losses/` | Multi-task losses: Label-smoothed Cross-Entropy (`ce_smooth.py`), Weighted Regularized Triplet Loss (`triplet_wrt.py`), and Center Loss (`center.py`). |
+| `training/trainer.py` | Production training loop featuring per-epoch checkpointing, CUDA OOM recovery, thermal pause guards, and metric tracking. |
+
+### `src/reiduq/search/` — Vector & Attribute Retrieval
+| Path | What / Why |
+|---|---|
+| `gallery_store.py` | SQLite metadata store holding indexed vehicle sightings (image paths, camera IDs, timestamps, plates, colors, brands). |
+| `indexer.py` | Offline batch indexing pipeline embedding image collections into FAISS indexes and SQLite tables. |
+| `plate_ocr.py` | Best-effort OCR reader for alphanumeric license plate recognition. |
+| `query_pipeline.py` | Unified search engine executing hybrid queries across FAISS vector embeddings and SQLite attribute filters. |
+
+### `src/reiduq/serving/` — REST API & Serving Subsystem
+| Path | What / Why |
+|---|---|
+| `app.py` | FastAPI application serving `/health`, `/v1/search/plate`, `/v1/ingest/video`, `/v1/dataset/*`, and `/v1/review/feedback`. |
+| `schemas.py` | Pydantic request and response models with strict typing and schema validation. |
+| `security.py` | Constant-time authentication, session handling, rate limiting, and safe file serving checks. |
+| `audit.py` | SQLite-backed audit logger storing match history and operator decisions. |
+
+---
+
+## 3. `apps/web/` — Web Frontend Application
 
 | Path | What / Why |
 |---|---|
-| `base.py` | `Sample` record and the dataset ABC every adapter implements |
-| `veri776.py` | VeRi-776 adapter; parses identity/camera/frame from filenames |
-| `veriwild.py` | VERI-Wild / VERI-Wild 2.0 adapter; reads identity/camera from `train_test_split/*.txt` list files (different layout from VeRi-776) |
-| `torch_dataset.py` | `ReIDImageDataset` — remaps identities to contiguous labels for the classifier head |
-| `transforms.py` | Train/eval image transforms; random erasing here is NOT the occlusion protocol (see `occlusion/compositor.py`) |
-| `splits.py` | **Correctness-critical.** Builds manifests, hashes them, and raises `SplitLeakageError` automatically on load |
-| `samplers.py` | PK identity sampler — triplet loss needs positives inside the batch |
-| `occlusion/geometry.py` | Plausibility rules; rejects floating or implausibly scaled occluders |
-| `occlusion/occluder_bank.py` | Bank of real segmented occluder patches |
-| `occlusion/compositor.py` | Binary-searches placement to hit a target visibility; emits a replayable recipe |
-| `occlusion/miner.py` | Finds naturally occluded samples for the real-occlusion protocol |
+| `src/app/page.tsx` | Main dashboard displaying system metrics, telemetry, and mathematical explanations of $T(v, c)$ calibration. |
+| `src/app/search/page.tsx` | Vehicle search console featuring multi-attribute search (Plate, Color, Brand) and the **Human Review Modal**. |
+| `src/app/ingest/page.tsx` | Video ingestion console supporting video uploads, live detection previews, and real-time gallery indexing. |
+| `src/app/dataset/page.tsx` | Interactive Excel-style tabular viewer for exploring indexed datasets and CSV records. |
+| `src/lib/api.ts` | Strongly-typed client wrapper communicating with the FastAPI backend. |
+| `src/app/globals.css` | Clean, dark slate UI design system (pure slate palette, no neon glow or visual slop). |
+| `tailwind.config.ts` | Custom Tailwind CSS tokens and themes configured for production density. |
 
-## `src/reiduq/visibility/`
+---
+
+## 4. `data/` & `models/` — Data & Storage
 
 | Path | What / Why |
 |---|---|
-| `estimator.py` | Three estimators for `v`, each explicit about its assumption; the single-image one reports an error band |
-| `parts.py` | 6-region visibility vector — *which* parts are hidden, not just how much |
-| `bands.py` | O0–O4 bucketing for per-band reporting |
+| `data/processed/gallery_store_entries.csv` | Full CSV export of 11,630+ vehicle sightings, including video detections with color, brand, and plate attributes. |
+| `data/processed/veri776_*.csv` | Benchmark partitions for VeRi-776 (`all`, `train`, `query`, `gallery`). |
+| `models/gallery/store.db` | High-speed SQLite database storing sighting metadata, attributes, and human feedback. |
+| `models/gallery/index.faiss` | Binary FAISS vector index storing 512-dimensional continuous embeddings for sub-millisecond retrieval. |
 
-## `src/reiduq/calibration/` — the contribution (100% coverage required)
+---
+
+## 5. `Interview Preparation/` — Comprehensive Technical Guides
+
+| Path | Topic Covered |
+|---|---|
+| `01_PROJECT_OVERVIEW.md` | Problem statement, mission-critical impact, why naive models fail. |
+| `02_TECH_STACK_EXPLANATION.md` | Deep justification for Next.js, FastAPI, FAISS, PyTorch, YOLOv8, and SQLite. |
+| `03_MODELS_AND_CALIBRATION.md` | Mathematical formulas for $T(v, c)$, OSNet omni-scale architecture, and UQ metrics. |
+| `04_ROUTES_AND_REQUEST_LIFECYCLE.md` | Complete API endpoint directory and end-to-end request journeys. |
+| `05_TRAINING_AND_CALIBRATION_PIPELINE.md` | Triplet loss, calibrator optimization, and active learning loops. |
+| `06_SYSTEM_DESIGN_AND_SCALABILITY.md` | City-scale distributed deployment (edge-to-cloud split, Kafka, vector quantization). |
+| `07_FREQUENT_INTERVIEW_QUESTIONS.md` | High-yield technical interview Q&A. |
+| `README.md` | Study path roadmap and guide index. |
+
+---
+
+## 6. Automation, Testing & DevOps
 
 | Path | What / Why |
 |---|---|
-| `base.py` | `BaseCalibrator` with `n_params` and `inference_multiplier` in the interface, because the efficiency table is a deliverable |
-| `raw.py` | Uncalibrated softmax — the status quo being criticised |
-| `global_temperature.py` | Guo et al. 2017, one scalar. Baseline and argument target |
-| `platt.py`, `vector_scaling.py` | Classic post-hoc baselines; vector scaling rules out "more parameters" as the explanation |
-| `conditional_temperature.py` | **The method.** ~6k-param MLP predicting `T(v, c)`. Saves feature mean/std with the checkpoint |
-| `mc_dropout.py`, `deep_ensemble.py` | Expensive strong baselines; anchor the cost/quality trade-off |
-| `evidential.py` | Single-pass modern competitor — the most dangerous baseline |
-| `features.py` | Builds the 30-d conditioning vector; disabled groups are zeroed so checkpoints stay loadable across ablations |
-| `camera_descriptor.py` | Label-free domain descriptor from image statistics |
-
-## `src/reiduq/aggregation/`, `abstention/`
-
-| Path | What / Why |
-|---|---|
-| `ess.py` | Effective-sample-size discount; without it, log-pooling near-duplicate frames manufactures confidence |
-| `visibility_weighted.py`, `inverse_temperature.py` | Two fusion rules |
-| `best_frame.py` | The simple baseline the aggregation contribution must beat |
-| `policy.py` | Threshold selection under an operator risk constraint — never hand-tuned |
-| `conformal.py` | Split-conformal risk control with a stated finite-sample guarantee |
-| `decision.py` | Three-way verdict; keeps UNCERTAIN and REJECT distinct on purpose |
-
-## `src/reiduq/eval/`
-
-| Path | What / Why |
-|---|---|
-| `metrics/calibration.py` | ECE (equal-mass default), aECE, MCE, Brier + decomposition, NLL, reliability curves |
-| `metrics/selective.py` | Risk–coverage, AURC, FAR@coverage, coverage@risk, AUROC |
-| `metrics/retrieval.py` | CMC, mAP, mINP |
-| `metrics/efficiency.py` | Params, p50/p95 latency, throughput, peak memory |
-| `bootstrap.py` | CIs and paired bootstrap tests — single-run numbers get revision requests |
-| `figures/builder.py` | F1–F6 from committed result JSONs, never from a live run |
-
-## `src/reiduq/models/`
-
-| Path | What / Why |
-|---|---|
-| `builder.py` | Encoder construction and L2 normalisation; falls back to a plain ResNet-50 if a registered backbone is unavailable |
-| `backbones/resnet_ibn.py` | ResNet-50-IBN-a; falls back to plain ResNet-50 without the optional `resnet_ibn` package |
-| `backbones/transreid.py` | ViT-B/16 with overlapping-patch embedding; used for Experiment K (backbone transfer) |
-| `losses/{ce_smooth,triplet_wrt,center}.py` | Label-smoothed CE, weighted-regularised triplet, center loss — the standard three-loss Re-ID recipe |
-| `training/trainer.py` | Training loop with laptop-safety built in: per-epoch resumable checkpoints, CUDA-OOM batch retry/skip, SIGINT/SIGTERM-safe shutdown, CPU thread cap, optional GPU thermal pause |
-
-## `src/reiduq/search/` — the plate/photo search feature
-
-| Path | What / Why |
-|---|---|
-| `gallery_store.py` | SQLite metadata (image path, camera, plate text/confidence) alongside the FAISS index; one row per indexed image |
-| `indexer.py` | Offline job: embeds every image in a dataset, best-effort OCRs a plate crop, writes the FAISS index + metadata store. Run via `scripts/build_gallery_index.py` |
-| `plate_ocr.py` | Best-effort plate reading (EasyOCR if installed, clean no-op fallback otherwise). Explicitly NOT a verified identifier - see the module docstring on why these datasets make plate OCR unreliable |
-| `query_pipeline.py` | `SearchEngine`: photo search (embed → FAISS top-k → calibrate → verdict) and plate search (fuzzy text lookup → anchor image → re-run as a photo search). Every result carries a calibrated Match/Uncertain/Reject verdict, never a bare similarity |
-
-## `src/reiduq/serving/`
-
-| Path | What / Why |
-|---|---|
-| `app.py` | FastAPI wiring: CORS allowlist, rate limit, security headers, scrubbed error handler |
-| `security.py` | Constant-time key comparison, HMAC-signed session tokens with expiry, role dependencies, upload validation |
-| `audit.py` | SQLite-backed audit trail of match decisions (ids/verdict/confidence only, never images); swap for Postgres behind the same interface at multi-replica scale |
-| `predictor.py` | Shares the research calibration path so demo and paper cannot drift |
-| `schemas.py` | Pydantic request/response; `extra="forbid"` and a strict id pattern |
-
-## `apps/web/`
-
-| Path | What / Why |
-|---|---|
-| `next.config.mjs` | CSP, no inline scripts, standalone output |
-| `src/lib/api.ts` | Typed fetch client; session cookie only, API key never held client-side, `UnauthorizedError` on a 401 |
-| `src/hooks/useSession.ts` | Login/logout state; source of truth is the httpOnly cookie, not client state |
-| `src/app/login/page.tsx` | Exchanges an API key for a session once; the key is never stored |
-| `src/components/features/MatchConsole.tsx` | The console: adjust visibility and watch confidence move while similarity does not |
-| `src/components/ui/ConfidenceBar.tsx` | Shows calibrated probability with both thresholds marked |
-
-## `tests/`
-
-| Path | What / Why |
-|---|---|
-| `unit/test_splits.py` | Asserts leakage is *detected*. The most important test in the repo |
-| `unit/test_calibration_metrics.py` | Hand-computable ECE cases and bounds |
-| `unit/test_calibrators.py` | Every calibrator beats raw on overconfident data |
-| `property/` | Hypothesis invariants for the selective metrics |
-| `regression/test_golden_metrics.py` | Golden numbers, tolerance 1e-2. CI catches drift before the paper does |
-| `security/test_api_security.py` | Auth, headers, payload rejection |
-
-## `docker/`, `infra/`, `.github/`
-
-| Path | What / Why |
-|---|---|
-| `docker/Dockerfile` | Multi-stage, digest-pinned base, non-root uid 10001, healthcheck |
-| `docker/docker-compose.yml` | Read-only rootfs, dropped capabilities, no-new-privileges |
-| `infra/*.tf` | Cloud-agnostic scaffold with the same security posture |
-| `.github/workflows/ci.yml` | lint → contracts → types → tests → coverage artifact |
-| `.github/workflows/security.yml` | gitleaks, bandit, pip-audit, trivy; weekly schedule for new CVEs |
-| `.github/workflows/cd.yml` | Build → scan → SBOM → cosign sign → staging → manual prod approval |
+| `scripts/build_gallery_index.py` | CLI utility to embed image folders and populate FAISS and SQLite stores. |
+| `scripts/generate_veri_dataset.py` | Generates normalized CSV manifests for VeRi-776 splits. |
+| `scripts/benchmark.py` | Measures calibrator inference throughput, FLOPs, and latency percentiles (p50, p95). |
+| `scripts/train_safe.sh` | Bash script for safe overnight model training with automatic OOM recovery. |
+| `tests/unit/` | Fast unit tests testing calibrators, metrics, loss functions, and gallery stores. |
+| `tests/security/` | Validates API security, input validation, and directory traversal defenses. |
+| `docker/Dockerfile` | Multi-stage, digest-pinned backend container running as non-root user (uid 10001). |
+| `docker/docker-compose.yml` | Multi-container orchestration spinning up API, frontend, and volume stores. |
+| `infra/` | Terraform infrastructure-as-code files for AWS/GCP cloud provisioning. |
