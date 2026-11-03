@@ -33,7 +33,7 @@ jobs:
         run: black --check src tests || true
 
       - name: Unit tests
-        run: pytest tests/unit --no-cov -q
+        run: pytest tests/unit --cov=src/reiduq --cov-report=xml -q
 
       - name: Upload coverage
         if: always()

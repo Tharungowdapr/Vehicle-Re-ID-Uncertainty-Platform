@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS gallery_entries (
     plate_text TEXT,                    -- best-effort OCR read, nullable
     plate_confidence REAL,
     visibility REAL,
+    vehicle_type TEXT,
+    color TEXT,
+    brand TEXT,
+    split TEXT,
     indexed_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_gallery_plate ON gallery_entries(plate_text);
