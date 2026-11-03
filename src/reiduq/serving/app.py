@@ -676,12 +676,14 @@ async def ingest_video(
 
             # 2-stage pipeline setup
             from reiduq.detection.rfdetr import RFDetrDetector
+            from reiduq.detection.attributes import detect_vehicle_color, detect_license_plate, estimate_vehicle_brand
             from reiduq.segmentation.base import gate_crop
             from reiduq.models.builder import build_encoder
             from reiduq.retrieval.index import GalleryIndex, GalleryEntry
             from reiduq.search.gallery_store import GalleryStore, GalleryEntryRow
 
             device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"[INFO] Video ingestion pipeline running on: {device.upper()}")
             detector = RFDetrDetector(device=device)
             encoder = build_encoder("osnet_ain", embed_dim=512, pretrained=True)
             encoder = encoder.to(device)
@@ -739,6 +741,14 @@ async def ingest_video(
                         vec = torch.nn.functional.normalize(vec, dim=1)
                     embedding = vec.cpu().numpy()[0].astype(np.float32)
 
+                    # Extract attributes: color, plate OCR, and brand
+                    v_color = detect_vehicle_color(crop)
+                    v_plate, v_plate_conf = detect_license_plate(crop)
+                    det_cls = getattr(det, 'cls', 'vehicle')
+                    if det_cls == "car":
+                        det_cls = "sedan"
+                    v_brand = estimate_vehicle_brand(crop, det_cls)
+
                     uid = f"{job_id}_f{frame_id:06d}_d{job['detections']:04d}"
                     # Save crop image
                     crop_out = out_dir / "crops"
@@ -755,18 +765,24 @@ async def ingest_video(
                         dataset=filename,
                         camera_id=f"video_{job_id}",
                         ground_truth_identity=None,
-                        plate_text=None,
-                        plate_confidence=None,
+                        plate_text=v_plate,
+                        plate_confidence=v_plate_conf if v_plate else None,
                         visibility=1.0,
+                        vehicle_type=det_cls,
+                        color=v_color,
+                        brand=v_brand,
+                        split="gallery",
                     ))
                     job["detections"] += 1
                     job["embeddings"] += 1
-                    det_cls = getattr(det, 'cls', 'vehicle')
                     if len(job["detections_list"]) < 50:
                         job["detections_list"].append({
                             "uid": uid,
                             "frame_id": frame_id,
                             "vehicle_type": det_cls,
+                            "color": v_color,
+                            "brand": v_brand,
+                            "plate_text": v_plate,
                             "bbox": [x1, y1, x2, y2],
                             "crop_path": crop_path,
                             "camera_id": f"video_{job_id}",
@@ -860,10 +876,10 @@ async def commit_ingested_video_to_dataset(job_id: str, dataset_name: str = "vid
             "camera_id": d.get("camera_id", f"video_{job_id}"),
             "frame_id": d.get("frame_id", 0),
             "sequence_id": 1,
-            "vehicle_type": "car",
-            "color": "detected",
-            "brand": "generic",
-            "plate_text": f"VD-{idx:04d}",
+            "vehicle_type": d.get("vehicle_type", "sedan"),
+            "color": d.get("color", "gray"),
+            "brand": d.get("brand", "Toyota"),
+            "plate_text": d.get("plate_text") or f"VD-{idx:04d}",
             "plate_confidence": d.get("confidence", 0.9),
             "visibility": 1.0,
             "width": 256,
@@ -1155,3 +1171,57 @@ async def dataset_previews(dataset_name: str) -> list[dict]:
     files = sorted(preview_dir.glob("*.jpg"))
     # Return paths that the frontend can fetch via /api/files/<path>
     return [{"filename": f.name, "path": str(f)} for f in files]
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Human Review & Active Learning Feedback Loop
+# ──────────────────────────────────────────────────────────────────
+
+from pydantic import BaseModel
+
+class FeedbackSubmission(BaseModel):
+    sighting_id: str | None = None
+    query_id: str | None = None
+    original_verdict: str
+    corrected_verdict: str  # MATCH, REJECT
+    notes: str = ""
+    operator_id: str = "analyst"
+
+@app.post("/v1/review/feedback")
+async def submit_review_feedback(payload: FeedbackSubmission):
+    """Store human review corrections to feed back into calibration fine-tuning."""
+    import sqlite3
+    db_path = Path(settings.audit_db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS human_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sighting_id TEXT,
+                query_id TEXT,
+                original_verdict TEXT NOT NULL,
+                corrected_verdict TEXT NOT NULL,
+                notes TEXT,
+                operator_id TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            INSERT INTO human_feedback (sighting_id, query_id, original_verdict, corrected_verdict, notes, operator_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            payload.sighting_id,
+            payload.query_id,
+            payload.original_verdict,
+            payload.corrected_verdict,
+            payload.notes,
+            payload.operator_id,
+            datetime.now(UTC).isoformat()
+        ))
+        conn.commit()
+        return {"status": "success", "message": "Feedback recorded for active learning calibration."}
+    finally:
+        conn.close()
+

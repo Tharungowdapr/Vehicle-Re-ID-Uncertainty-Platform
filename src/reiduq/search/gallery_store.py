@@ -47,6 +47,10 @@ class GalleryEntryRow:
     plate_text: str | None = None
     plate_confidence: float | None = None
     visibility: float | None = None
+    vehicle_type: str | None = None
+    color: str | None = None
+    brand: str | None = None
+    split: str | None = None
 
 
 class GalleryStore:
@@ -79,12 +83,13 @@ class GalleryStore:
                 """INSERT INTO gallery_entries
                    (faiss_position, uid, image_path, dataset, camera_id,
                     ground_truth_identity, plate_text, plate_confidence,
-                    visibility, indexed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    visibility, vehicle_type, color, brand, split, indexed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     row.faiss_position, row.uid, row.image_path, row.dataset,
                     row.camera_id, row.ground_truth_identity, row.plate_text,
                     row.plate_confidence, row.visibility,
+                    row.vehicle_type, row.color, row.brand, row.split,
                     datetime.now(UTC).isoformat(),
                 ),
             )

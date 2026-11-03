@@ -28,6 +28,7 @@ node_modules/
 # Dataset and model binaries (large files, not version controlled)
 data/raw/*
 data/processed/*
+!data/processed/*.csv
 data/external/*
 !data/**/.gitkeep
 

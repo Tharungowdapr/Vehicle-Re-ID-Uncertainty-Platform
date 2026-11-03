@@ -5,11 +5,10 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: { DEFAULT: "#050810", soft: "#0a0f1d", line: "#1a253c" },
-        paper: "#e2e8f0",
-        accent: { DEFAULT: "#00f0ff", glow: "rgba(0, 240, 255, 0.5)", dark: "#008899" },
-        purple: { DEFAULT: "#b026ff", glow: "rgba(176, 38, 255, 0.5)" },
-        verdict: { match: "#00ff9d", uncertain: "#ffb800", reject: "#ff3366" },
+        ink: { DEFAULT: "#0b0f19", soft: "#111827", line: "#1f2937" },
+        paper: { DEFAULT: "#f3f4f6", muted: "#9ca3af" },
+        accent: { DEFAULT: "#3b82f6", hover: "#2563eb" },
+        verdict: { match: "#10b981", uncertain: "#f59e0b", reject: "#ef4444" },
       },
       fontFamily: {
         sans: ["ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "Inter", "sans-serif"],

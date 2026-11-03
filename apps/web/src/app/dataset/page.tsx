@@ -602,6 +602,10 @@ export default function DatasetManager() {
   useEffect(() => {
     checkBackendHealth().then(setHealth);
     fetchDatasets();
+    const timer = setInterval(() => {
+      checkBackendHealth().then(setHealth);
+    }, 4000);
+    return () => clearInterval(timer);
   }, []);
 
   return (

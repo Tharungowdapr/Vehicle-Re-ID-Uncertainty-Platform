@@ -47,6 +47,9 @@ export interface IngestionDetection {
   uid: string;
   frame_id: number;
   vehicle_type?: string;
+  color?: string;
+  brand?: string;
+  plate_text?: string | null;
   bbox: number[];
   crop_path: string;
   camera_id: string;
@@ -116,12 +119,12 @@ export interface BackendHealth {
 
 export async function checkBackendHealth(): Promise<BackendHealth> {
   try {
-    const r = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
+    const r = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) return { ok: false, reason: `health check failed (${r.status})` };
     const body = await r.json();
     return { ok: true, status: body.status };
-  } catch {
-    return { ok: false, reason: "Backend unreachable — start with: uvicorn reiduq.serving.app:app --reload" };
+  } catch (err: any) {
+    return { ok: false, reason: "Service initializing or unreachable on port 8000" };
   }
 }
 
@@ -334,3 +337,20 @@ export const searchDatasetsCount = (q: string, field: string = "all", split: str
   request<{ count: number; query: string; field: string; split: string }>(
     `/v1/dataset/search/count?q=${encodeURIComponent(q)}&field=${field}&split=${encodeURIComponent(split)}`
   );
+
+export interface ReviewFeedback {
+  sighting_id?: string | null;
+  query_id?: string | null;
+  original_verdict: string;
+  corrected_verdict: string;
+  notes?: string;
+  operator_id?: string;
+}
+
+export const submitFeedback = (payload: ReviewFeedback) =>
+  request<{ status: string; message: string }>("/v1/review/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
